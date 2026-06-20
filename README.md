@@ -29,27 +29,33 @@ change; only then do the hands write a single byte.** Nothing lands without your
 > This repo is **only the sandbox executor**. The intelligence lives at rlmlocal.com — it's never bundled
 > here. What you see is exactly what runs on your machine: a small Rust process and a one-screen window.
 
-## Download & install
+## Download
 
-Grab the build for your OS from the [**Releases**](../../releases) page:
+Grab your build from the [**Releases**](../../releases) page:
 
-| OS | File | First-launch (unsigned beta) |
-|---|---|---|
-| 🍎 **macOS** | `.dmg` | Right-click the app → **Open** → **Open** |
-| 🪟 **Windows** | `.msi` / `.exe` | **More info** → **Run anyway** |
-| 🐧 **Linux** | `.AppImage` / `.deb` / `.rpm` | `chmod +x` the AppImage, or install the package |
+### 🍎 macOS — Intel + Apple Silicon
+- `Rlmlocal.Sandbox_..._universal.dmg` — installer
 
-> **Unsigned beta:** your OS will warn on first launch because the build isn't code-signed yet. The steps
-> above get you past it. (Signing is on the roadmap.)
+### 🪟 Windows
+- `Rlmlocal.Sandbox_..._x64-setup.exe` — one-click installer (recommended)
+- `Rlmlocal.Sandbox_..._x64_en-US.msi` — MSI alternative
+
+### 🐧 Linux
+- `Rlmlocal.Sandbox_..._amd64.AppImage` — portable, runs on any distro (no install)
+- `Rlmlocal.Sandbox_..._amd64.deb` — Debian / Ubuntu
+- `Rlmlocal.Sandbox-..._x86_64.rpm` — Fedora / RHEL
+
+> **Unsigned beta:** your OS will warn on first launch (not code-signed yet).
+> macOS: right-click → **Open** → **Open** · Windows: **More info** → **Run anyway** · Linux: just install/run it.
 
 ## Pair it (one time)
 
-1. **Launch** RLMlocal Sandbox — a small window opens showing **🟢 running** and a **pairing code**.
-2. Open **[rlmlocal.com](https://rlmlocal.com)** and paste the code when prompted
-   (or go straight to `rlmlocal.com/?pair=<code>`).
+1. **Launch** RLMlocal Sandbox — a small window opens showing **🟢 running**.
+2. Click **"Pair now"** — it opens [rlmlocal.com](https://rlmlocal.com) in your browser and connects automatically.
 3. Done — your browser and this executor are now bound. Keep the window open while you work.
 
-The pairing code is required on **every** request, and the bridge only accepts calls from `rlmlocal.com`.
+*(Prefer manual? The window also shows a pairing code you can paste at rlmlocal.com.)*
+The pairing token is required on **every** request, and the bridge only accepts calls from `rlmlocal.com`.
 
 ## Security
 

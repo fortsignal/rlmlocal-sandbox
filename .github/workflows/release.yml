@@ -52,21 +52,28 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'RLMlocal Sandbox ${{ github.ref_name }}'
           releaseBody: |
-            Local sandboxed executor for RLMlocal. Runs tests and applies approved code changes on your machine — **nothing lands without your approval.**
+            The local executor for [RLMlocal](https://rlmlocal.com). Runs tests and applies **approved** code changes on your machine — **nothing lands without your approval.**
 
-            ## ⬇️ Download for your OS
-            | OS | Download |
-            |---|---|
-            | 🍎 **macOS** (Intel + Apple Silicon) | `..._universal.dmg` |
-            | 🪟 **Windows** | `..._x64-setup.exe` (or the `.msi`) |
-            | 🐧 **Linux** | `.AppImage` (portable), `.deb`, or `.rpm` |
+            ## ⬇️ Download
 
-            **Unsigned beta** — your OS will warn on first launch:
-            - **macOS:** right-click the app → Open → Open
-            - **Windows:** "More info" → "Run anyway"
-            - **Linux:** just install/run it
+            ### 🍎 macOS — Intel + Apple Silicon
+            - **`Rlmlocal.Sandbox_0.1.0_universal.dmg`** — installer
 
-            After launch, copy the **pairing code** and paste it at **rlmlocal.com** to authorize this executor.
+            ### 🪟 Windows
+            - **`Rlmlocal.Sandbox_0.1.0_x64-setup.exe`** — one-click installer (recommended)
+            - **`Rlmlocal.Sandbox_0.1.0_x64_en-US.msi`** — MSI alternative
+
+            ### 🐧 Linux
+            - **`Rlmlocal.Sandbox_0.1.0_amd64.AppImage`** — portable, runs on any distro (no install)
+            - **`Rlmlocal.Sandbox_0.1.0_amd64.deb`** — Debian / Ubuntu
+            - **`Rlmlocal.Sandbox-0.1.0-1.x86_64.rpm`** — Fedora / RHEL
+
+            ## 🚀 Setup (one-time)
+            1. **Install & launch** it. Unsigned beta — click past the warning:
+               • macOS: right-click → Open → Open  •  Windows: More info → Run anyway
+            2. Click **"Pair now"** — it opens rlmlocal.com in your browser and connects automatically.
+
+            Keep the window open while you work. *(Prefer manual? The window also shows a pairing code.)*
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}
