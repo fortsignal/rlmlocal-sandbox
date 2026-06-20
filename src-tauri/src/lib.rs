@@ -819,6 +819,7 @@ pub fn run() {
 
   tauri::Builder::default()
     .plugin(tauri_plugin_opener::init()) // lets the pairing window open the user's default browser
+    .plugin(tauri_plugin_updater::Builder::new().build()) // AUTO-UPDATE: pulls signed releases from GitHub
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -826,6 +827,24 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+      // AUTO-UPDATE (release only): on launch, check GitHub for a newer SIGNED release and install it (applies on
+      // next restart). Best-effort + off-thread → never blocks startup or the bridge. Debug skips it (dev builds
+      // have no signed updater artifacts). The updater pubkey in tauri.conf.json verifies each update's integrity.
+      #[cfg(not(debug_assertions))]
+      {
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+          use tauri_plugin_updater::UpdaterExt;
+          if let Ok(updater) = handle.updater() {
+            if let Ok(Some(update)) = updater.check().await {
+              println!("[updater] new version {} available — downloading…", update.version);
+              if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                println!("[updater] installed — restart the executor to apply");
+              }
+            }
+          }
+        });
       }
       // Show the pairing code (release enforces X-RLM-Token; debug skips it). The cockpit also reads it via
       // the `get_pairing_code` command — the user pastes it into rlmlocal.com to authorize this executor.

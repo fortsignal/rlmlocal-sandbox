@@ -55,7 +55,23 @@ function main() {
       const t = typeof checker.getBaseTypeOfLiteralType === 'function' ? checker.getBaseTypeOfLiteralType(t0) : t0;
       const raw = checker.typeToString(t);
       if (!raw || raw === 'error') return null;
-      const s = sanitize(raw);
+      let s = sanitize(raw);
+      // EXPAND a NAMED object type the guard just nuked to bare `any` (e.g. `FileMetricsResult`) into its STRUCTURE
+      // `{ top: …[]; target: …; median: number }`, sanitizing each member. A bare `any` param drops the shape, so
+      // callbacks over it (`res.top.filter(f=>…)`) become implicit-any → TS7006 RED; keeping the object/array shape
+      // makes them contextually typed. Arrays (`X[]`→`any[]`) + functions never hit this (raw isn't bare `any`).
+      if (s === 'any' && (t.getFlags() & ts.TypeFlags.Object) && !(t.getCallSignatures && t.getCallSignatures().length)) {
+        try {
+          const props = t.getProperties();
+          if (props.length && props.length <= 40) {
+            const members = props.map((p) => {
+              const pt = checker.getTypeOfSymbolAtLocation(p, id);
+              return `${p.getName()}: ${sanitize(checker.typeToString(pt)) || 'any'}`;
+            });
+            s = `{ ${members.join('; ')} }`;
+          }
+        } catch { /* keep `any` → null → AST fallback */ }
+      }
       return s && s !== 'any' ? s : null; // bare `any` (or all-unresolvable) → null → AST fallback
     } catch { return null; }
   });
