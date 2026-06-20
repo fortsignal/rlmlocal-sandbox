@@ -57,16 +57,16 @@ jobs:
             ## ⬇️ Download
 
             ### 🍎 macOS — Intel + Apple Silicon
-            - **`Rlmlocal.Sandbox_0.1.0_universal.dmg`** — installer
+            - the **`.dmg`** — installer
 
             ### 🪟 Windows
-            - **`Rlmlocal.Sandbox_0.1.0_x64-setup.exe`** — one-click installer (recommended)
-            - **`Rlmlocal.Sandbox_0.1.0_x64_en-US.msi`** — MSI alternative
+            - the **`.exe`** — one-click installer (recommended)
+            - the **`.msi`** — MSI alternative
 
             ### 🐧 Linux
-            - **`Rlmlocal.Sandbox_0.1.0_amd64.AppImage`** — portable, runs on any distro (no install)
-            - **`Rlmlocal.Sandbox_0.1.0_amd64.deb`** — Debian / Ubuntu
-            - **`Rlmlocal.Sandbox-0.1.0-1.x86_64.rpm`** — Fedora / RHEL
+            - the **`.AppImage`** — portable, runs on any distro (no install)
+            - the **`.deb`** — Debian / Ubuntu
+            - the **`.rpm`** — Fedora / RHEL
 
             ## 🚀 Setup (one-time)
             1. **Install & launch** it. Unsigned beta — click past the warning:
