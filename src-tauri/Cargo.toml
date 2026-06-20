@@ -23,6 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-opener = "2" # one-click "Pair now" → opens the default browser at rlmlocal.com/?pair=<code>
 # HTTP bridge so the web frontend (Vite :5173 in dev) can drive this local executor — Tauri's native `invoke`
 # can't be reached from a browser. Tiny, sync, dependency-light. CURRENTLY DEV-ONLY (cfg(debug_assertions),
 # CORS *, no auth). Production hardening (token auth + domain-locked CORS + release un-gate + getrandom) is

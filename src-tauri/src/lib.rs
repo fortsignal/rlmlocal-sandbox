@@ -727,8 +727,13 @@ fn is_allowed_origin(origin: &str) -> bool {
 fn cors_response(body: &str, status: u16, origin: Option<&str>) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
   let mut resp = tiny_http::Response::from_string(body).with_status_code(status);
   for (k, v) in [
-    ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
     ("Access-Control-Allow-Headers", "Content-Type, X-RLM-Token"),
+    // Private Network Access (Chrome): a PUBLIC https origin (rlmlocal.com) calling a PRIVATE address
+    // (127.0.0.1) triggers a PNA preflight that REQUIRES this header, or the browser blocks the request.
+    // Dev (localhost→localhost) never needed it; production (rlmlocal.com→127.0.0.1) does. THIS was the
+    // "executor won't connect from prod" bug — the probe + every call was silently blocked without it.
+    ("Access-Control-Allow-Private-Network", "true"),
     ("Content-Type", "application/json"),
   ] {
     if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
@@ -813,6 +818,7 @@ pub fn run() {
   std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 
   tauri::Builder::default()
+    .plugin(tauri_plugin_opener::init()) // lets the pairing window open the user's default browser
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

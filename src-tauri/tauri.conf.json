@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "RLMlocal Sandbox",
-        "width": 540,
-        "height": 460,
+        "width": 560,
+        "height": 600,
         "resizable": true,
         "fullscreen": false
       }
