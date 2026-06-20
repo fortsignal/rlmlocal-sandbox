@@ -52,13 +52,21 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'RLMlocal Sandbox ${{ github.ref_name }}'
           releaseBody: |
-            Local sandboxed executor for RLMlocal. Runs tests and applies approved code changes on your machine — nothing lands without your approval.
+            Local sandboxed executor for RLMlocal. Runs tests and applies approved code changes on your machine — **nothing lands without your approval.**
 
-            **Unsigned beta build** — your OS will warn on first launch:
-            - macOS: right-click the app → Open → Open.
-            - Windows: "More info" → "Run anyway".
+            ## ⬇️ Download for your OS
+            | OS | Download |
+            |---|---|
+            | 🍎 **macOS** (Intel + Apple Silicon) | `..._universal.dmg` |
+            | 🪟 **Windows** | `..._x64-setup.exe` (or the `.msi`) |
+            | 🐧 **Linux** | `.AppImage` (portable), `.deb`, or `.rpm` |
 
-            After launch, copy the pairing code it shows and paste it at rlmlocal.com to authorize this executor.
+            **Unsigned beta** — your OS will warn on first launch:
+            - **macOS:** right-click the app → Open → Open
+            - **Windows:** "More info" → "Run anyway"
+            - **Linux:** just install/run it
+
+            After launch, copy the **pairing code** and paste it at **rlmlocal.com** to authorize this executor.
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}

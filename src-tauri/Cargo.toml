@@ -1,10 +1,10 @@
 [package]
-name = "app"
+name = "rlmlocal-sandbox"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Local execution sandbox for RLMlocal — runs tests and applies approved code changes locally."
+authors = ["RLMlocal"]
 license = ""
-repository = ""
+repository = "https://github.com/fortsignal/rlmlocal-sandbox"
 edition = "2021"
 rust-version = "1.77.2"
 
