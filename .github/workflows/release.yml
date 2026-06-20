@@ -1,0 +1,64 @@
+name: release
+
+# Tag a version (e.g. `git tag v0.0.1 && git push origin v0.0.1`) → builds the
+# RELEASE (production, token-enforced) executor for macOS + Windows + Linux and
+# attaches the installers to a draft GitHub Release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # universal (Apple Silicon + Intel)
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Build + publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          tagName: ${{ github.ref_name }}
+          releaseName: 'RLMlocal Sandbox ${{ github.ref_name }}'
+          releaseBody: |
+            Local sandboxed executor for RLMlocal. Runs tests and applies approved code changes on your machine — nothing lands without your approval.
+
+            **Unsigned beta build** — your OS will warn on first launch:
+            - macOS: right-click the app → Open → Open.
+            - Windows: "More info" → "Run anyway".
+
+            After launch, copy the pairing code it shows and paste it at rlmlocal.com to authorize this executor.
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}
