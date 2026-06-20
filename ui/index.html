@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RLMlocal Sandbox</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      font: 14px/1.5 ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0b0f17; color: #e6edf3; text-align: center; padding: 24px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 999px; background: #3fb950; display: inline-block; box-shadow: 0 0 8px #3fb950; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+    .sub { color: #8b949e; font-size: 12.5px; max-width: 380px; }
+    .code {
+      font: 600 22px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing: 2px;
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 14px 18px; color: #58a6ff; user-select: all;
+    }
+    .row { display: flex; gap: 8px; align-items: center; }
+    button {
+      font: 500 12.5px ui-sans-serif, sans-serif; cursor: pointer;
+      background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 8px; padding: 8px 14px;
+    }
+    button:hover { background: #30363d; }
+    .muted { color: #6e7681; font-size: 11.5px; }
+    code { background: #161b22; border: 1px solid #30363d; border-radius: 5px; padding: 1px 6px; color: #79c0ff; }
+  </style>
+</head>
+<body>
+  <div class="row"><span class="dot"></span><h1>RLMlocal Sandbox — running</h1></div>
+  <div class="sub">This is the local executor. It runs tests and applies <b>approved</b> code changes on your machine. Nothing lands without your OK.</div>
+
+  <div id="pair">
+    <div class="muted" style="margin-bottom:8px">Pairing code — paste it at <code>rlmlocal.com</code> to authorize this executor</div>
+    <div class="row">
+      <div class="code" id="code">··········</div>
+      <button id="copy">Copy</button>
+    </div>
+  </div>
+
+  <div class="muted">Bridge listening on <code>127.0.0.1:1421</code> · keep this window open while you work.</div>
+
+  <script>
+    async function load() {
+      try {
+        // withGlobalTauri = true → invoke the Rust command that returns the pairing token.
+        const code = await window.__TAURI__.core.invoke('get_pairing_code');
+        document.getElementById('code').textContent = code;
+        document.getElementById('copy').onclick = async () => {
+          try { await navigator.clipboard.writeText(code); } catch {}
+          const b = document.getElementById('copy'); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1200);
+        };
+      } catch (e) {
+        document.getElementById('code').textContent = 'error';
+        document.querySelector('.sub').textContent = 'Could not read the pairing code: ' + (e && e.message ? e.message : e);
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

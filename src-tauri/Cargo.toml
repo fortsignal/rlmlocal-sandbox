@@ -1,0 +1,31 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.2", features = [] }
+tauri-plugin-log = "2"
+# HTTP bridge so the web frontend (Vite :5173 in dev) can drive this local executor — Tauri's native `invoke`
+# can't be reached from a browser. Tiny, sync, dependency-light. CURRENTLY DEV-ONLY (cfg(debug_assertions),
+# CORS *, no auth). Production hardening (token auth + domain-locked CORS + release un-gate + getrandom) is
+# specced in memory `tauri-execution-bridge` — build when shipping the web-frontend + local-executor model.
+tiny_http = "0.12"
+getrandom = "0.2" # pairing-token secret for the bridge (hardening pt 3)
