@@ -73,9 +73,10 @@ jobs:
             ## 🚀 Setup (one-time)
             1. **Install & launch** it. Unsigned beta — click past the warning:
                • macOS: right-click → Open → Open  •  Windows: More info → Run anyway
-            2. Click **"Pair now"** — it opens rlmlocal.com in your browser and connects automatically.
+            2. Open **rlmlocal.com**, paste the **pairing code** from this window into the yellow **① Pairing code**
+               box in the console, set your **② Project folder** path, and click **Connect**.
 
-            Keep the window open while you work. *(Prefer manual? The window also shows a pairing code.)*
-          releaseDraft: true
+            Keep the window open while you work.
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
