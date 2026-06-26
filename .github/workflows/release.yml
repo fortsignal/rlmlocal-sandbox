@@ -43,6 +43,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
 
+      # Per-version changelog: prepend RELEASE_NOTES.md to the release body (above the static download/setup
+      # section). Edit RELEASE_NOTES.md before each tag so users see what changed; absent → a neutral fallback.
+      - name: Load release notes
+        shell: bash
+        run: |
+          {
+            echo 'NOTES<<RLMEOF'
+            if [ -f RELEASE_NOTES.md ]; then cat RELEASE_NOTES.md; else echo "_See the commit history for changes in this version._"; fi
+            echo 'RLMEOF'
+          } >> "$GITHUB_ENV"
+
       - name: Build + publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -54,6 +65,10 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'RLMlocal Sandbox ${{ github.ref_name }}'
           releaseBody: |
+            ${{ env.NOTES }}
+
+            ---
+
             The local executor for [RLMlocal](https://rlmlocal.com). Runs tests and applies **approved** code changes on your machine — **nothing lands without your approval.**
 
             ## ⬇️ Download
