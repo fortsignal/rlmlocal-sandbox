@@ -284,18 +284,23 @@ fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
   // change is invisible to the next verify ("search not found") and the refactor loop drifts apart after one land.
   // Tracked edits: apply the HEAD→worktree diff. Untracked, non-ignored files (e.g. a new module a prior move
   // created): copy them in. Best-effort — on any failure the shadow simply stays at HEAD (the old behavior).
-  if let Ok(diff) = Command::new("git").args(["-C", real, "diff", "HEAD", "--binary"]).output() {
-    if diff.status.success() && !diff.stdout.is_empty() {
-      use std::io::Write;
-      if let Ok(mut child) = Command::new("git")
-        .args(["-C", shadow_s, "apply", "--whitespace=nowarn"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-      {
-        if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(&diff.stdout); }
-        let _ = child.wait();
+  // Tracked edits: COPY each changed file straight from the real working tree. (Was `git diff HEAD | git apply`,
+  // which could fail silently on a large/complex diff and leave the shadow at HEAD — so a prior land's anchor was
+  // "search not found" on the next verify, breaking land→verify→land. 2026-06-22: 15 landed move-alones → the
+  // overlay fell back → batch couldn't find `import { ollamaCtx }`.) A direct copy can't mis-apply; deletes drop.
+  if let Ok(changed) = Command::new("git").args(["-C", real, "diff", "HEAD", "--name-only"]).output() {
+    if changed.status.success() {
+      for rel in String::from_utf8_lossy(&changed.stdout).lines() {
+        let rel = rel.trim();
+        if rel.is_empty() { continue; }
+        let src = real_root.join(rel);
+        let dst = shadow.join(rel);
+        if src.exists() {
+          if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
+          let _ = std::fs::copy(&src, &dst);
+        } else {
+          let _ = std::fs::remove_file(&dst); // deleted in the working tree → drop from the shadow too
+        }
       }
     }
   }
@@ -611,6 +616,7 @@ fn apply_patch_inner(
   project_path: Option<String>,
   file: String,
   edits: Vec<Edit>,
+  message: Option<String>,
 ) -> Result<ApplyResult, String> {
   let root = resolve_root(project_path)?;
   // MULTI-FILE: pre-apply EVERY file (validate all searches) BEFORE writing anything — atomic across files,
@@ -626,6 +632,17 @@ fn apply_patch_inner(
     if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); } // new module's dir, if any
     std::fs::write(p, patched).map_err(|e| format!("write {}: {e}", p.display()))?;
   }
+  // COMMIT-ON-LAND: snapshot this approved change as ONE git commit (the proposal's spec is the message). Keeps
+  // HEAD current so the verify shadow (a worktree at HEAD) always reflects prior lands — no "search not found" on
+  // the next verify — AND gives an auditable, revertable refactor history (one commit per landed refactor).
+  // Best-effort: a non-git project or a commit failure (e.g. no user.name) never fails the land — files are written,
+  // and the copy-based shadow overlay still reflects the uncommitted working tree as a fallback.
+  if root.join(".git").exists() {
+    let msg = message.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "rlm: landed refactor".to_string());
+    let root_s = root.to_str().unwrap_or_default();
+    let _ = Command::new("git").args(["-C", root_s, "add", "-A"]).output();
+    let _ = Command::new("git").args(["-C", root_s, "commit", "-m", &msg, "--no-verify"]).output();
+  }
   Ok(ApplyResult { applied: true, file })
 }
 
@@ -636,8 +653,9 @@ fn apply_patch(
   search: Option<String>,
   replace: Option<String>,
   edits: Option<Vec<Edit>>,
+  message: Option<String>,
 ) -> Result<ApplyResult, String> {
-  apply_patch_inner(project_path, file, edit_list(search, replace, edits))
+  apply_patch_inner(project_path, file, edit_list(search, replace, edits), message)
 }
 
 /// A 0-based source position (tree-sitter coords) the brain asks the TS compiler about.
@@ -652,16 +670,25 @@ struct Position {
 /// baked into the binary with `include_str!`) under `node`, with the PROJECT's `node_modules` on `NODE_PATH` so
 /// `require('typescript')` + the project's `tsconfig` load. Read-only. Returns the script's JSON `{ "types": […] }`
 /// verbatim (or `{ "error" }`, which the brain tolerates → falls back to AST). Never writes to the project.
-fn resolve_types_inner(project_path: Option<String>, file: String, positions: Vec<Position>) -> Result<String, String> {
+fn resolve_types_inner(project_path: Option<String>, file: String, positions: Vec<Position>, content: Option<String>) -> Result<String, String> {
   let root = project_path.ok_or_else(|| "resolve_types: no project path".to_string())?;
+  // `content` (converge only) = VIRTUAL file content the script overlays instead of reading stale disk. null = disk.
+  let input = serde_json::json!({ "root": root, "file": file, "positions": positions, "content": content }).to_string();
+  run_ts_script(&root, input)
+}
+
+/// Run the embedded TS-compiler service (`scripts/resolveExtractTypes.cjs`, baked with `include_str!`) under `node`
+/// with the PROJECT's `node_modules` on `NODE_PATH` (so `require('typescript')` + the project's `tsconfig` load),
+/// feeding `input` JSON on stdin. SHARED by both ops — `resolve_types` (type strings) AND `compute_refactor`
+/// (refactor edits) — one script, one runner, one transport. Read-only; never writes the project.
+fn run_ts_script(root: &str, input: String) -> Result<String, String> {
   const SCRIPT: &str = include_str!("../../scripts/resolveExtractTypes.cjs");
   let script_path = std::env::temp_dir().join("rlm-resolve-extract-types.cjs");
-  std::fs::write(&script_path, SCRIPT).map_err(|e| format!("write resolver: {e}"))?;
-  let input = serde_json::json!({ "root": root, "file": file, "positions": positions }).to_string();
+  std::fs::write(&script_path, SCRIPT).map_err(|e| format!("write ts-service: {e}"))?;
   let node = if cfg!(windows) { "node.exe" } else { "node" };
   let mut child = Command::new(node)
     .arg(&script_path)
-    .current_dir(&root)
+    .current_dir(root)
     .env("NODE_PATH", format!("{root}/node_modules"))
     .stdin(std::process::Stdio::piped())
     .stdout(std::process::Stdio::piped())
@@ -676,15 +703,34 @@ fn resolve_types_inner(project_path: Option<String>, file: String, positions: Ve
   let s = String::from_utf8_lossy(&out.stdout).to_string();
   if s.trim().is_empty() {
     let err: String = String::from_utf8_lossy(&out.stderr).chars().take(300).collect();
-    return Err(format!("resolver no output: {err}"));
+    return Err(format!("ts-service no output: {err}"));
   }
   Ok(s)
 }
 
 #[tauri::command]
-fn resolve_types(project_path: Option<String>, file: String, positions: Vec<Position>) -> Result<serde_json::Value, String> {
-  let s = resolve_types_inner(project_path, file, positions)?;
+fn resolve_types(project_path: Option<String>, file: String, positions: Vec<Position>, content: Option<String>) -> Result<serde_json::Value, String> {
+  let s = resolve_types_inner(project_path, file, positions, content)?;
   serde_json::from_str(&s).map_err(|e| format!("parse resolver output: {e}"))
+}
+
+/// REFACTOR EDITS via the project's own TS LANGUAGE SERVICE — `move` / `extract` / `rename`, reference-aware and
+/// cross-file (the mechanics our hand-rolled mover refuses). MIRRORS `resolve_types`: same baked script, same runner,
+/// just the `refactor` op. `args` is passed through to the script (kind-specific: move `{line}`, extract
+/// `{startLine,endLine}`, rename `{line,oldName,newName}`). Returns `{ ok, edits:[{file,search,replace}] }` — the SAME
+/// Edit shape `verify_patch`/`apply_patch` already apply. Read-only: it only COMPUTES the edits; the brain still
+/// verifies + the human approves + `apply_patch` is the sole writer.
+fn compute_refactor_inner(project_path: Option<String>, file: String, kind: String, args: serde_json::Value, content: Option<String>) -> Result<String, String> {
+  let root = project_path.ok_or_else(|| "compute_refactor: no project path".to_string())?;
+  // `content` (converge only) = VIRTUAL file content the script overlays instead of reading stale disk. null = disk.
+  let input = serde_json::json!({ "root": root, "file": file, "op": "refactor", "kind": kind, "args": args, "content": content }).to_string();
+  run_ts_script(&root, input)
+}
+
+#[tauri::command]
+fn compute_refactor(project_path: Option<String>, file: String, kind: String, args: serde_json::Value, content: Option<String>) -> Result<serde_json::Value, String> {
+  let s = compute_refactor_inner(project_path, file, kind, args, content)?;
+  serde_json::from_str(&s).map_err(|e| format!("parse refactor output: {e}"))
 }
 
 /// The HTTP bridge's port. Frontend (Vite) stays on 5173; the Rust backend bridge gets its OWN port.
@@ -794,12 +840,16 @@ fn start_http_bridge() {
             .map(|r| serde_json::to_string(&r).unwrap_or_default())
         } else if is_post && url.starts_with("/apply_patch") {
           let edits = v.get("edits").and_then(|e| serde_json::from_value::<Vec<Edit>>(e.clone()).ok());
-          apply_patch_inner(s("projectPath"), s("file").unwrap_or_default(), edit_list(s("search"), s("replace"), edits))
+          apply_patch_inner(s("projectPath"), s("file").unwrap_or_default(), edit_list(s("search"), s("replace"), edits), s("message"))
             .map(|r| serde_json::to_string(&r).unwrap_or_default())
         } else if is_post && url.starts_with("/resolve_types") {
           let positions = v.get("positions").and_then(|p| serde_json::from_value::<Vec<Position>>(p.clone()).ok()).unwrap_or_default();
-          // the resolver already returns JSON ({ types: [...] }) — pass it through verbatim.
-          resolve_types_inner(s("projectPath"), s("file").unwrap_or_default(), positions)
+          // the resolver already returns JSON ({ types: [...] }) — pass it through verbatim. `content` = converge overlay.
+          resolve_types_inner(s("projectPath"), s("file").unwrap_or_default(), positions, s("content"))
+        } else if is_post && url.starts_with("/compute_refactor") {
+          let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+          // the script returns JSON ({ ok, edits:[...] }) — pass it through verbatim. `content` = converge overlay.
+          compute_refactor_inner(s("projectPath"), s("file").unwrap_or_default(), s("kind").unwrap_or_default(), args, s("content"))
         } else {
           Err("not found".to_string())
         };
@@ -852,7 +902,7 @@ pub fn run() {
       start_http_bridge(); // external-browser bridge on 127.0.0.1:1421 (release + debug; release needs the token)
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![run_tests, verify_patch, apply_patch, resolve_types, get_pairing_code])
+    .invoke_handler(tauri::generate_handler![run_tests, verify_patch, apply_patch, resolve_types, compute_refactor, get_pairing_code])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
