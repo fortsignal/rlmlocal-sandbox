@@ -2,11 +2,12 @@
      prepends this file's contents to the GitHub release body, above the download/setup section.
      Keep it user-facing (what changed, in plain terms) — no internal symbol names. -->
 
-## ✨ What's new in v0.1.4
+## ✨ What's new in v0.1.5
 
-- **Reference-aware refactoring** — rename, decouple, and extract now run through your project's own TypeScript compiler, so every reference updates correctly, including across files.
-- **Auto-commit on land** — each change you approve is committed to git automatically: clean, auditable history, and your working tree stays current.
-- **More reliable verification** — fixed a shadow-verify drift that could report "search not found" right after a change landed.
-- **Smoother `/converge`** (autonomous decompose) — chained refactors (decouple → move → rename) now verify and apply correctly in sequence.
+- **Graph coder hands** — local OpenCode task host so the CODE dock can run multi-step coding in a shadow worktree (still requires your Approve before anything lands).
+- **Co-change signals** — the executor can report which files historically change together (for planning / graph), now covering modern JS variants and more languages.
+- **Literal source scan** — exact on-disk search helper for implementation planning (read-only).
+- **Python verify, fixed** — refactors on Python projects now verify against YOUR project's own environment (your venv is used instead of a stray global pytest), and a stuck or watch-mode test run can no longer freeze verification — it now fails honestly instead of hanging or, worse, passing without running.
+- Existing structure path (verify → Approve → land) unchanged.
 
-*Existing installs auto-update to this version on next launch — no re-download needed. Still an unsigned beta; same one-time setup below.*
+*Existing installs auto-update on next launch when this release is published. Still an unsigned beta.*

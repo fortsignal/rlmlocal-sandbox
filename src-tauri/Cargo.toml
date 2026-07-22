@@ -8,8 +8,6 @@ repository = "https://github.com/fortsignal/rlmlocal-sandbox"
 edition = "2021"
 rust-version = "1.77.2"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -25,9 +23,9 @@ tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2" # one-click "Pair now" → opens the default browser at rlmlocal.com/?pair=<code>
 tauri-plugin-updater = "2" # AUTO-UPDATE: pull signed releases from GitHub (v0.1.2+)
-# HTTP bridge so the web frontend (Vite :5173 in dev) can drive this local executor — Tauri's native `invoke`
-# can't be reached from a browser. Tiny, sync, dependency-light. CURRENTLY DEV-ONLY (cfg(debug_assertions),
-# CORS *, no auth). Production hardening (token auth + domain-locked CORS + release un-gate + getrandom) is
-# specced in memory `tauri-execution-bridge` — build when shipping the web-frontend + local-executor model.
 tiny_http = "0.12"
+# Task-scoped Cloudflare bridge: OpenCode → Worker /infer via localhost OpenAI-compatible adapter.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 getrandom = "0.2" # pairing-token secret for the bridge (hardening pt 3)
+# NOTE: GEPA/rusqlite deliberately EXCLUDED from public sandbox (EXECUTOR-RELEASE-SYNC-UPDATER) —
+# monorepo-only until GEPA is product-live. Brain soft-nulls missing log_trace/export_diagnostics.

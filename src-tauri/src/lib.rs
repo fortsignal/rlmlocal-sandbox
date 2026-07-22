@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+// OpenCode process host (Code door) — CLI/`serve` lifecycle; no Electron.
+mod opencode_host;
+use opencode_host::{
+  opencode_ensure, opencode_run, opencode_start, opencode_status, opencode_stop,
+  opencode_task_cleanup, opencode_task_collect, opencode_task_start, opencode_task_turn,
+};
 
 #[derive(serde::Serialize)]
 struct TestResult {
@@ -49,7 +55,9 @@ fn run_project_checks(root: &Path) -> (i64, i64, String) {
   let mut out = String::new();
   // LINT — the project's own `lint` script (e.g. eslint), if it has one.
   let lint = if has_npm_script(root, "lint") {
-    match Command::new(npm).args(["run", "lint", "--silent"]).current_dir(root).envs(env.iter().map(|(k, v)| (k, v))).output() {
+    let mut cmd = Command::new(npm);
+    cmd.args(["run", "lint", "--silent"]).current_dir(root).envs(env.iter().map(|(k, v)| (k, v)));
+    match run_with_timeout(&mut cmd, CHECK_TIMEOUT) {
       Ok(o) if !o.status.success() => {
         let c = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
         let n = count_errors(&c);
@@ -64,7 +72,9 @@ fn run_project_checks(root: &Path) -> (i64, i64, String) {
   // TYPECHECK — `tsc --noEmit` when tsconfig.json is present.
   let types = if root.join("tsconfig.json").exists() {
     let npx = if cfg!(windows) { "npx.cmd" } else { "npx" };
-    match Command::new(npx).args(["tsc", "--noEmit"]).current_dir(root).envs(env.iter().map(|(k, v)| (k, v))).output() {
+    let mut cmd = Command::new(npx);
+    cmd.args(["tsc", "--noEmit"]).current_dir(root).envs(env.iter().map(|(k, v)| (k, v)));
+    match run_with_timeout(&mut cmd, CHECK_TIMEOUT) {
       Ok(o) if !o.status.success() => {
         let c = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
         let n = c.matches("error TS").count() as i64;
@@ -121,29 +131,56 @@ fn resolve_root(project_path: Option<String>) -> Result<PathBuf, String> {
   }
 }
 
-/// AGNOSTIC runner detection — map the project's manifest to its test command.
+/// LANG-REG (2026-07-19): the Rust half of the language registry — ONE table for execution facts,
+/// mirroring src/features/agent/languagePacks.ts (the TS single source for detector tables). Two
+/// copies exist ONLY because they live on opposite sides of the TS/Rust boundary; the TS side is
+/// the editor of record — sync this when it changes.
+const CODE_EXTS: &[&str] = &[
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
+  ".py", ".go", ".rs", ".java", ".rb", ".php",
+  ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt", ".kts", ".scala",
+  ".vue", ".svelte", ".sql",
+];
+
+/// Runner selection: manifests (IN ORDER — first hit wins) → test command. The python venv
+/// preference and the windows npm.cmd variant stay CODE (resolution logic, not table data).
+struct RunnerPack {
+  manifests: &'static [&'static str],
+  prog: &'static str,
+  args: &'static [&'static str],
+  label: &'static str,
+}
+const RUNNERS: &[RunnerPack] = &[
+  RunnerPack { manifests: &["package.json"], prog: "npm", args: &["test"], label: "node" },
+  RunnerPack { manifests: &["Cargo.toml"], prog: "cargo", args: &["test"], label: "rust" },
+  RunnerPack { manifests: &["go.mod"], prog: "go", args: &["test", "./..."], label: "go" },
+  RunnerPack { manifests: &["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "requirements.txt", "conftest.py"], prog: "pytest", args: &[], label: "python" },
+  RunnerPack { manifests: &["Makefile"], prog: "make", args: &["test"], label: "make" },
+];
+
+/// AGNOSTIC runner detection — map the project's manifest to its test command (table-driven, LANG-REG).
 fn detect_runner(root: &Path) -> Result<(String, Vec<String>, &'static str), String> {
   let has = |f: &str| root.join(f).exists();
-  if has("package.json") {
-    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    Ok((npm.to_string(), vec!["test".into()], "node"))
-  } else if has("Cargo.toml") {
-    Ok(("cargo".into(), vec!["test".into()], "rust"))
-  } else if has("go.mod") {
-    Ok(("go".into(), vec!["test".into(), "./...".into()], "go"))
-  } else if has("pyproject.toml")
-    || has("setup.py")
-    || has("setup.cfg")
-    || has("pytest.ini")
-    || has("requirements.txt")
-    || has("conftest.py")
-  {
-    Ok(("pytest".into(), vec![], "python"))
-  } else if has("Makefile") {
-    Ok(("make".into(), vec!["test".into()], "make"))
-  } else {
-    Err("couldn't detect a test runner for this project".into())
+  for pack in RUNNERS {
+    if !pack.manifests.iter().any(|m| has(m)) {
+      continue;
+    }
+    // Prefer the project's OWN virtualenv over a bare `pytest` (2026-07-19 audit): without it, either
+    // no pytest is on PATH (honest error) or WORSE a global pytest runs WITHOUT the project's deps —
+    // collection errors at baseline AND after → identical fingerprints → FALSE GREEN on a suite that
+    // never ran. The venv is symlinked into the verify shadow (make_shadow), so this path exists there.
+    if pack.label == "python" {
+      for cand in [".venv/bin/python", "venv/bin/python", ".venv/Scripts/python.exe", "venv/Scripts/python.exe"] {
+        let py = root.join(cand);
+        if py.exists() {
+          return Ok((py.to_string_lossy().into_owned(), vec!["-m".into(), "pytest".into()], "python"));
+        }
+      }
+    }
+    let prog = if cfg!(windows) && pack.prog == "npm" { "npm.cmd".to_string() } else { pack.prog.to_string() };
+    return Ok((prog, pack.args.iter().map(|a| a.to_string()).collect(), pack.label));
   }
+  Err("couldn't detect a test runner for this project".into())
 }
 
 /// Load KEY=VALUE from the project's own env files (.env, then .env.local overrides) — so the loop
@@ -210,17 +247,49 @@ fn parse_failed(output: &str) -> Option<i64> {
   None
 }
 
+/// std::process has no timeout — a watch-mode or deadlocked test script would freeze verify FOREVER
+/// (2026-07-19 audit). Spawn with stdout/stderr drained on threads (so a chatty suite can't deadlock
+/// on a full pipe), poll try_wait, kill past the deadline. A timeout is an ERROR — surfaces RED,
+/// never silently green.
+fn run_with_timeout(cmd: &mut Command, timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+  use std::io::Read;
+  let mut child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+  let mut out_pipe = child.stdout.take().expect("piped stdout");
+  let mut err_pipe = child.stderr.take().expect("piped stderr");
+  let t_out = std::thread::spawn(move || { let mut b = Vec::new(); let _ = out_pipe.read_to_end(&mut b); b });
+  let t_err = std::thread::spawn(move || { let mut b = Vec::new(); let _ = err_pipe.read_to_end(&mut b); b });
+  let start = std::time::Instant::now();
+  let status = loop {
+    if let Some(s) = child.try_wait()? { break s; }
+    if start.elapsed() > timeout {
+      let _ = child.kill();
+      let _ = child.wait();
+      let _ = t_out.join();
+      let _ = t_err.join();
+      return Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("command timed out after {}s", timeout.as_secs()),
+      ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+  };
+  let stdout = t_out.join().unwrap_or_default();
+  let stderr = t_err.join().unwrap_or_default();
+  Ok(std::process::Output { status, stdout, stderr })
+}
+
+/// Suites get longer (a cold `cargo test` recompile can take minutes); deterministic checks are quick.
+const SUITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Run the project's suite once, runner auto-detected, env loaded.
 /// Returns (runner, exit_code, failed_count, combined-output).
 fn run_suite(root: &Path) -> Result<(String, i32, i64, String), String> {
   let (prog, args, label) = detect_runner(root)?;
   let env = load_project_env(root);
-  let output = Command::new(&prog)
-    .args(&args)
-    .current_dir(root)
-    .envs(env)
-    .output()
-    .map_err(|e| format!("failed to spawn {prog}: {e}"))?;
+  let mut cmd = Command::new(&prog);
+  cmd.args(&args).current_dir(root).envs(env);
+  let output = run_with_timeout(&mut cmd, SUITE_TIMEOUT).map_err(|e| format!("failed to run {prog}: {e}"))?;
   let mut combined = String::from_utf8_lossy(&output.stdout).to_string();
   combined.push_str(&String::from_utf8_lossy(&output.stderr));
   let code = output.status.code().unwrap_or(-1);
@@ -253,7 +322,7 @@ fn run_tests(project_path: Option<String>) -> Result<TestResult, String> {
   run_tests_inner(project_path)
 }
 
-fn now_ms() -> u128 {
+pub(crate) fn now_ms() -> u128 {
   std::time::SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .map(|d| d.as_millis())
@@ -263,7 +332,7 @@ fn now_ms() -> u128 {
 /// Create a SHADOW of the project via `git worktree` so verification NEVER touches the real source.
 /// node_modules is symlinked (copying GBs is absurd); gitignored env files are copied in so the shadow
 /// runs with the same env. The shadow checks out HEAD — the real working tree is read-only, untouched.
-fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
+pub(crate) fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
   let real = real_root.to_str().ok_or("non-utf8 project path")?;
   let shadow = std::env::temp_dir().join(format!("rlm-shadow-{}-{}", std::process::id(), now_ms()));
   let shadow_s = shadow.to_str().ok_or("non-utf8 temp path")?;
@@ -327,6 +396,23 @@ fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
       let _ = std::os::windows::fs::symlink_dir(&nm, &link);
     }
   }
+  // python venvs: symlink like node_modules (2026-07-19 audit) — gitignored, so otherwise absent from
+  // the shadow; then a global pytest collection-errors at BOTH baseline and after → identical
+  // fingerprints → FALSE GREEN on a suite that never ran. detect_runner prefers these when present.
+  for d in [".venv", "venv"] {
+    let src = real_root.join(d);
+    if src.exists() {
+      let link = shadow.join(d);
+      #[cfg(unix)]
+      {
+        let _ = std::os::unix::fs::symlink(&src, &link);
+      }
+      #[cfg(windows)]
+      {
+        let _ = std::os::windows::fs::symlink_dir(&src, &link);
+      }
+    }
+  }
   // gitignored env files aren't in HEAD — copy them so the shadow runs with the real env
   for f in [".env", ".env.local"] {
     let src = real_root.join(f);
@@ -338,7 +424,7 @@ fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
 }
 
 /// Always discard the shadow (git worktree remove + rm -rf belt-and-suspenders).
-fn remove_shadow(real_root: &Path, shadow: &Path) {
+pub(crate) fn remove_shadow(real_root: &Path, shadow: &Path) {
   if let (Some(real), Some(s)) = (real_root.to_str(), shadow.to_str()) {
     let _ = Command::new("git")
       .args(["-C", real, "worktree", "remove", "--force", s])
@@ -386,13 +472,18 @@ fn failure_fingerprints(output: &str) -> std::collections::HashSet<String> {
 /// catch a syntax error (e.g. the `let score` + `const { score }` redeclaration) INSTANTLY — a class the
 /// count-based test diff can miss. .ts is covered by tsc in run_project_checks; other languages fall back to
 /// the test run. Returns the error text on failure, None on pass/skip.
+/// Syntax-check command per extension (LANG-REG table): base args only — the file is appended at the call site.
+fn parse_check_cmd(ext: &str) -> Option<(&'static str, Vec<&'static str>)> {
+  match ext {
+    "js" | "mjs" | "cjs" | "jsx" => Some(("node", vec!["--check"])),
+    "py" => Some(("python3", vec!["-m", "py_compile"])),
+    _ => None,
+  }
+}
 fn parse_check(root: &Path, file: &str) -> Option<String> {
   let ext = Path::new(file).extension().and_then(|e| e.to_str()).unwrap_or("");
-  let (prog, args): (&str, Vec<&str>) = match ext {
-    "js" | "mjs" | "cjs" | "jsx" => ("node", vec!["--check", file]),
-    "py" => ("python3", vec!["-m", "py_compile", file]),
-    _ => return None,
-  };
+  let (prog, mut args) = parse_check_cmd(ext)?;
+  args.push(file);
   match Command::new(prog).args(&args).current_dir(root).output() {
     Ok(o) if !o.status.success() => {
       let err = String::from_utf8_lossy(&o.stderr).to_string();
@@ -577,6 +668,15 @@ fn verify_patch_inner(
       out.push('\n');
     }
     out.push_str(&tail(&after_out, 1200)); // test-runner detail (the assertion), tailed — not the full lint dump
+    // Append (not prepend) staged excerpts so the outer tail below preserves
+    // this evidence alongside a noisy test runner's failure output.
+    if broke {
+      out.push_str("\nSTAGED source excerpts (shadow only):\n");
+      for (_p, patched, f) in &writes {
+        let excerpt: String = patched.chars().take(700).collect();
+        out.push_str(&format!("--- {f} ---\n{excerpt}\n"));
+      }
+    }
     Ok(VerifyResult {
       runner,
       baseline_failed,
@@ -678,9 +778,8 @@ fn resolve_types_inner(project_path: Option<String>, file: String, positions: Ve
 }
 
 /// Run the embedded TS-compiler service (`scripts/resolveExtractTypes.cjs`, baked with `include_str!`) under `node`
-/// with the PROJECT's `node_modules` on `NODE_PATH` (so `require('typescript')` + the project's `tsconfig` load),
-/// feeding `input` JSON on stdin. SHARED by both ops — `resolve_types` (type strings) AND `compute_refactor`
-/// (refactor edits) — one script, one runner, one transport. Read-only; never writes the project.
+/// with the PROJECT's `node_modules` on `NODE_PATH`, feeding `input` JSON on stdin. SHARED by both ops —
+/// `resolve_types` (type strings) AND `compute_refactor` (refactor edits) — one script, one runner. Read-only.
 fn run_ts_script(root: &str, input: String) -> Result<String, String> {
   const SCRIPT: &str = include_str!("../../scripts/resolveExtractTypes.cjs");
   let script_path = std::env::temp_dir().join("rlm-resolve-extract-types.cjs");
@@ -714,12 +813,11 @@ fn resolve_types(project_path: Option<String>, file: String, positions: Vec<Posi
   serde_json::from_str(&s).map_err(|e| format!("parse resolver output: {e}"))
 }
 
-/// REFACTOR EDITS via the project's own TS LANGUAGE SERVICE — `move` / `extract` / `rename`, reference-aware and
-/// cross-file (the mechanics our hand-rolled mover refuses). MIRRORS `resolve_types`: same baked script, same runner,
-/// just the `refactor` op. `args` is passed through to the script (kind-specific: move `{line}`, extract
-/// `{startLine,endLine}`, rename `{line,oldName,newName}`). Returns `{ ok, edits:[{file,search,replace}] }` — the SAME
-/// Edit shape `verify_patch`/`apply_patch` already apply. Read-only: it only COMPUTES the edits; the brain still
-/// verifies + the human approves + `apply_patch` is the sole writer.
+/// REFACTOR EDITS via the project's own TS LANGUAGE SERVICE — move/extract/rename, reference-aware + cross-file (the
+/// mechanics the hand-rolled mover refuses). MIRRORS `resolve_types`: same baked script, same runner, just the
+/// `refactor` op. `args` passes through (move `{line}`, extract `{startLine,endLine}`, rename `{line,oldName,newName}`).
+/// Returns `{ ok, edits:[{file,search,replace}] }` — the SAME Edit shape verify/apply already use. Read-only: it only
+/// COMPUTES; the brain verifies + the human approves + apply_patch is the sole writer.
 fn compute_refactor_inner(project_path: Option<String>, file: String, kind: String, args: serde_json::Value, content: Option<String>) -> Result<String, String> {
   let root = project_path.ok_or_else(|| "compute_refactor: no project path".to_string())?;
   // `content` (converge only) = VIRTUAL file content the script overlays instead of reading stale disk. null = disk.
@@ -731,6 +829,151 @@ fn compute_refactor_inner(project_path: Option<String>, file: String, kind: Stri
 fn compute_refactor(project_path: Option<String>, file: String, kind: String, args: serde_json::Value, content: Option<String>) -> Result<serde_json::Value, String> {
   let s = compute_refactor_inner(project_path, file, kind, args, content)?;
   serde_json::from_str(&s).map_err(|e| format!("parse refactor output: {e}"))
+}
+
+/// CO-CHANGE coupling from git history — files that change TOGETHER across commits are functionally coupled even
+/// without an import/call edge (the semantic layer fuses this with imports+calls). Reuses the existing
+/// `Command::new("git")` pattern (like make_shadow / commit-on-land). `git log --name-only` → count file pairs that
+/// co-occur → keep pairs above a threshold. Read-only. {} for a non-git project. Paths are repo-relative.
+fn git_cochange_inner(project_path: Option<String>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+  use std::collections::HashMap;
+  let root = project_path.ok_or_else(|| "git_cochange: no project path".to_string())?;
+  if !std::path::Path::new(&root).join(".git").exists() { return Ok(HashMap::new()); }
+  // %x01 separates commits; --name-only lists each commit's changed files.
+  let out = Command::new("git")
+    .args(["-C", &root, "log", "--no-merges", "--name-only", "--pretty=format:%x01", "-n", "1500"])
+    .output()
+    .map_err(|e| format!("git log (is this a git repo?): {e}"))?;
+  let text = String::from_utf8_lossy(&out.stdout);
+  let is_code = |f: &str| CODE_EXTS.iter().any(|e| f.ends_with(e));
+  let mut pair_counts: HashMap<(String, String), u32> = HashMap::new();
+  for block in text.split('\u{1}') {
+    let files: Vec<String> = block.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && is_code(l)).map(|s| s.to_string()).collect();
+    // skip 1-file commits (no co-change) and huge commits (rename/format sweeps = noise, not coupling).
+    if files.len() < 2 || files.len() > 25 { continue; }
+    for i in 0..files.len() {
+      for j in (i + 1)..files.len() {
+        let (a, b) = if files[i] < files[j] { (files[i].clone(), files[j].clone()) } else { (files[j].clone(), files[i].clone()) };
+        *pair_counts.entry((a, b)).or_insert(0) += 1;
+      }
+    }
+  }
+  // keep pairs that co-changed >= 3 times (a pattern, not coincidence); emit both directions.
+  let mut map: HashMap<String, Vec<String>> = HashMap::new();
+  for ((a, b), c) in pair_counts {
+    if c >= 3 {
+      map.entry(a.clone()).or_default().push(b.clone());
+      map.entry(b).or_default().push(a);
+    }
+  }
+  Ok(map)
+}
+
+#[tauri::command]
+fn git_cochange(project_path: Option<String>) -> Result<serde_json::Value, String> {
+  let pairs = git_cochange_inner(project_path)?;
+  Ok(serde_json::json!({ "pairs": pairs }))
+}
+
+/// Exact source-literal result used only as a read-only planner backstop.
+/// It does not build a second graph, embed files, or grant write authority.
+#[derive(serde::Serialize)]
+struct LiteralTarget {
+  path: String,
+  hits: usize,
+}
+
+const LITERAL_SCAN_FILE_LIMIT: usize = 12_000;
+const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2_000_000;
+
+fn literal_source_file(path: &Path) -> bool {
+  matches!(
+    path.extension().and_then(|extension| extension.to_str()).map(|extension| extension.to_ascii_lowercase()).as_deref(),
+    Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "rs" | "go" | "java" | "kt" | "rb" | "php" | "cs" | "swift" | "vue" | "svelte")
+  )
+}
+
+fn skip_literal_scan_dir(name: &str) -> bool {
+  matches!(name, ".git" | "node_modules" | "dist" | "build" | "coverage" | ".next" | ".nuxt" | ".cache" | "target" | "vendor" | ".venv" | "venv" | "__pycache__")
+}
+
+fn collect_literal_source_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+  if out.len() >= LITERAL_SCAN_FILE_LIMIT { return Ok(()); }
+  for entry in std::fs::read_dir(dir).map_err(|error| format!("read source directory {}: {error}", dir.display()))? {
+    let entry = entry.map_err(|error| format!("read source entry: {error}"))?;
+    let path = entry.path();
+    let file_type = entry.file_type().map_err(|error| format!("inspect source entry {}: {error}", path.display()))?;
+    if file_type.is_dir() {
+      if !skip_literal_scan_dir(&entry.file_name().to_string_lossy()) {
+        collect_literal_source_files(root, &path, out)?;
+      }
+    } else if file_type.is_file() && literal_source_file(&path) && path.strip_prefix(root).is_ok() {
+      out.push(path);
+    }
+    if out.len() >= LITERAL_SCAN_FILE_LIMIT { break; }
+  }
+  Ok(())
+}
+
+/// Git gives the authoritative tracked + untracked non-ignored source set.
+/// A manifest-bearing non-git folder still works through a bounded fallback.
+fn literal_source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+  let git_paths = Command::new("git")
+    .args(["-C", root.to_str().ok_or("non-utf8 project path")?, "ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    .output();
+  if let Ok(output) = git_paths {
+    if output.status.success() {
+      let mut files = Vec::new();
+      for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() { continue; }
+        let relative = match std::str::from_utf8(raw) { Ok(path) => path, Err(_) => continue };
+        let path = root.join(relative);
+        if path.is_file() && literal_source_file(&path) { files.push(path); }
+        if files.len() >= LITERAL_SCAN_FILE_LIMIT { break; }
+      }
+      files.sort();
+      return Ok(files);
+    }
+  }
+  let mut files = Vec::new();
+  collect_literal_source_files(root, root, &mut files)?;
+  files.sort();
+  Ok(files)
+}
+
+fn find_literal_targets_at_root(root: &Path, literals: &[String]) -> Result<Vec<LiteralTarget>, String> {
+  let literals: Vec<String> = literals.iter()
+    .map(|literal| literal.trim().replace("\\/", "/").to_ascii_lowercase())
+    .filter(|literal| !literal.is_empty())
+    .collect();
+  if literals.is_empty() { return Ok(Vec::new()); }
+
+  let mut matches = Vec::new();
+  for path in literal_source_files(root)? {
+    let metadata = match std::fs::metadata(&path) { Ok(metadata) => metadata, Err(_) => continue };
+    if metadata.len() > LITERAL_SCAN_MAX_FILE_BYTES { continue; }
+    let source = match std::fs::read_to_string(&path) {
+      Ok(source) => source,
+      Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
+      Err(_) => continue,
+    };
+    let normalized = source.replace("\\/", "/").to_ascii_lowercase();
+    let hits = literals.iter().filter(|literal| normalized.contains(literal.as_str())).count();
+    if hits == 0 { continue; }
+    let relative = match path.strip_prefix(root) { Ok(relative) => relative, Err(_) => continue };
+    matches.push(LiteralTarget { path: relative.to_string_lossy().replace('\\', "/"), hits });
+  }
+  Ok(matches)
+}
+
+fn find_literal_targets_inner(project_path: Option<String>, literals: Vec<String>) -> Result<Vec<LiteralTarget>, String> {
+  let root = resolve_root(project_path)?;
+  find_literal_targets_at_root(&root, &literals)
+}
+
+#[tauri::command]
+fn find_literal_targets(project_path: Option<String>, literals: Vec<String>) -> Result<Vec<LiteralTarget>, String> {
+  find_literal_targets_inner(project_path, literals)
 }
 
 /// The HTTP bridge's port. Frontend (Vite) stays on 5173; the Rust backend bridge gets its OWN port.
@@ -809,7 +1052,7 @@ fn start_http_bridge() {
           return;
         }
       };
-      println!("[bridge] dev HTTP bridge on http://127.0.0.1:{BRIDGE_PORT} — external-browser invoke (POST /run_tests · /verify_patch · /apply_patch · /resolve_types)");
+      println!("[bridge] dev HTTP bridge on http://127.0.0.1:{BRIDGE_PORT} — external-browser invoke (POST /run_tests · /verify_patch · /apply_patch · /resolve_types · /compute_refactor · /git_cochange · /find_literal_targets · /opencode_*)");
       for mut req in server.incoming_requests() {
         let origin = req.headers().iter().find(|h| h.field.equiv("Origin")).map(|h| h.value.as_str().to_string());
         if *req.method() == tiny_http::Method::Options {
@@ -850,6 +1093,35 @@ fn start_http_bridge() {
           let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
           // the script returns JSON ({ ok, edits:[...] }) — pass it through verbatim. `content` = converge overlay.
           compute_refactor_inner(s("projectPath"), s("file").unwrap_or_default(), s("kind").unwrap_or_default(), args, s("content"))
+        } else if is_post && url.starts_with("/git_cochange") {
+          git_cochange_inner(s("projectPath")).map(|pairs| serde_json::json!({ "pairs": pairs }).to_string())
+        } else if is_post && url.starts_with("/find_literal_targets") {
+          let literals = v.get("literals").and_then(|items| serde_json::from_value::<Vec<String>>(items.clone()).ok()).unwrap_or_default();
+          find_literal_targets_inner(s("projectPath"), literals).map(|matches| serde_json::to_string(&matches).unwrap_or_else(|_| "[]".into()))
+        } else if is_post && url.starts_with("/opencode_status") {
+          Ok(opencode_host::status_json())
+        } else if is_post && url.starts_with("/opencode_start") {
+          opencode_host::start_json(s("projectPath"))
+        } else if is_post && url.starts_with("/opencode_stop") {
+          opencode_host::stop_json()
+        } else if is_post && url.starts_with("/opencode_ensure") {
+          opencode_host::ensure_json(s("projectPath"))
+        } else if is_post && url.starts_with("/opencode_task_start") {
+          opencode_host::task_start_json(s("projectPath"), s("model"), s("ollamaBase"), v.get("provider").filter(|p| !p.is_null()).cloned())
+        } else if is_post && url.starts_with("/opencode_task_collect") {
+          opencode_host::task_collect_json(s("taskId"))
+        } else if is_post && url.starts_with("/opencode_task_turn") {
+          opencode_host::task_turn_json(s("taskId"), s("message"), s("model"), s("ollamaBase"))
+        } else if is_post && url.starts_with("/opencode_task_cleanup") {
+          opencode_host::task_cleanup_json(s("taskId"))
+        } else if is_post && url.starts_with("/opencode_run") {
+          opencode_host::run_json(
+            s("projectPath"),
+            s("message").unwrap_or_default(),
+            s("model"),
+            s("ollamaBase"),
+            v.get("provider").filter(|p| !p.is_null()).cloned(),
+          )
         } else {
           Err("not found".to_string())
         };
@@ -868,8 +1140,8 @@ pub fn run() {
   std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 
   tauri::Builder::default()
-    .plugin(tauri_plugin_opener::init()) // lets the pairing window open the user's default browser
-    .plugin(tauri_plugin_updater::Builder::new().build()) // AUTO-UPDATE: pulls signed releases from GitHub
+    .plugin(tauri_plugin_opener::init()) // sandbox fork: one-click Pair now
+    .plugin(tauri_plugin_updater::Builder::new().build()) // sandbox fork: GitHub auto-update
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -878,9 +1150,7 @@ pub fn run() {
             .build(),
         )?;
       }
-      // AUTO-UPDATE (release only): on launch, check GitHub for a newer SIGNED release and install it (applies on
-      // next restart). Best-effort + off-thread → never blocks startup or the bridge. Debug skips it (dev builds
-      // have no signed updater artifacts). The updater pubkey in tauri.conf.json verifies each update's integrity.
+      // AUTO-UPDATE (release only): check GitHub for a newer SIGNED release. Sandbox fork.
       #[cfg(not(debug_assertions))]
       {
         let handle = app.handle().clone();
@@ -902,7 +1172,125 @@ pub fn run() {
       start_http_bridge(); // external-browser bridge on 127.0.0.1:1421 (release + debug; release needs the token)
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![run_tests, verify_patch, apply_patch, resolve_types, compute_refactor, get_pairing_code])
+    .invoke_handler(tauri::generate_handler![
+      run_tests, verify_patch, apply_patch, resolve_types, compute_refactor, git_cochange, find_literal_targets, get_pairing_code,
+      opencode_status, opencode_start, opencode_stop, opencode_ensure, opencode_run,
+      opencode_task_start, opencode_task_collect, opencode_task_turn, opencode_task_cleanup
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod literal_target_tests {
+  use super::*;
+
+  #[test]
+  fn scans_exact_source_literals_without_a_git_index() {
+    let root = std::env::temp_dir().join(format!("rlm-literal-target-{}-{}", std::process::id(), now_ms()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).expect("source directory");
+    std::fs::write(root.join("package.json"), "{}\n").expect("manifest");
+    std::fs::write(
+      root.join("src/stripThinkTags.ts"),
+      "export const strip = (s: string) => s.replace(/<think>[\\s\\S]*?<\\/think>/gi, '');\n",
+    ).expect("implementation source");
+    std::fs::write(root.join("src/other.ts"), "export const other = true;\n").expect("other source");
+
+    let found = find_literal_targets_at_root(&root, &["<think>".into(), "</think>".into()]).expect("literal scan");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, "src/stripThinkTags.ts");
+    assert_eq!(found[0].hits, 2);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+}
+
+#[cfg(test)]
+mod verify_honesty_tests {
+  use super::*;
+
+  fn mkroot(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("rlm-verify-honesty-{name}-{}-{}", std::process::id(), now_ms()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("root dir");
+    root
+  }
+
+  #[test]
+  fn pytest_runner_prefers_the_project_venv() {
+    let root = mkroot("venv");
+    std::fs::write(root.join("pytest.ini"), "[pytest]\n").expect("manifest");
+    std::fs::create_dir_all(root.join(".venv/bin")).expect("venv bin");
+    std::fs::write(root.join(".venv/bin/python"), "#!/bin/sh\n").expect("venv python");
+
+    let (prog, args, label) = detect_runner(&root).expect("runner");
+    assert_eq!(label, "python");
+    assert!(prog.ends_with(".venv/bin/python"), "prog was {prog}");
+    assert_eq!(args, vec!["-m".to_string(), "pytest".to_string()]);
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[test]
+  fn pytest_runner_falls_back_to_path_pytest_without_a_venv() {
+    let root = mkroot("novenv");
+    std::fs::write(root.join("pytest.ini"), "[pytest]\n").expect("manifest");
+
+    let (prog, _args, label) = detect_runner(&root).expect("runner");
+    assert_eq!(label, "python");
+    assert_eq!(prog, "pytest");
+
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn run_with_timeout_kills_a_hanging_command_instead_of_freezing() {
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30");
+    let start = std::time::Instant::now();
+    let err = run_with_timeout(&mut cmd, std::time::Duration::from_millis(300)).expect_err("must time out");
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "kill should be prompt");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn run_with_timeout_collects_output_of_a_fast_command() {
+    let mut cmd = Command::new("echo");
+    cmd.arg("hello");
+    let out = run_with_timeout(&mut cmd, std::time::Duration::from_secs(10)).expect("echo runs");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hello"));
+  }
+
+  #[test]
+  fn runner_table_preserves_the_old_selection_order() {
+    let root = mkroot("order");
+    std::fs::write(root.join("package.json"), "{}\n").unwrap();
+    std::fs::write(root.join("pytest.ini"), "[pytest]\n").unwrap();
+    let (prog, _args, label) = detect_runner(&root).expect("runner");
+    assert_eq!(label, "node"); // package.json beats the python manifests — same as the old if-chain
+    assert!(prog.ends_with("npm") || prog.ends_with("npm.cmd"));
+    let _ = std::fs::remove_dir_all(&root);
+  }
+
+  #[test]
+  fn code_exts_table_covers_the_previously_drifted_extensions() {
+    // the co-change filter used to drop these (LANG-REG): modern JS variants + regex-only languages
+    for ext in [".mjs", ".cjs", ".mts", ".cts", ".java", ".rb", ".php", ".cpp", ".hpp", ".scala"] {
+      assert!(CODE_EXTS.contains(&ext), "{ext} missing from CODE_EXTS");
+    }
+    assert_eq!(CODE_EXTS.len(), 27); // identical to ALL_CODE_EXTS on the TS side
+  }
+
+  #[test]
+  fn parse_check_table_maps_only_supported_extensions() {
+    assert!(parse_check_cmd("js").is_some());
+    assert!(parse_check_cmd("mjs").is_some());
+    assert!(parse_check_cmd("py").is_some());
+    assert!(parse_check_cmd("go").is_none());
+    assert!(parse_check_cmd("rs").is_none());
+  }
 }

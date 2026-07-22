@@ -5,71 +5,337 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>RLMlocal Sandbox</title>
   <style>
-    :root { color-scheme: dark; }
+    /* Brand kit — docs/internal/BRAND.md (same tokens as product cockpit) */
+    :root {
+      color-scheme: dark;
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --elevated: #171717;
+      --line: #2a2a2a;
+      --text: #d1d5db;
+      --mute: #9ca3af;
+      --mute2: #6b7280;
+      --accent: #00e5ff;
+      --accent-light: #7df9ff;
+      --green: #22c55e;
+      --red: #f87171;
+    }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
-      margin: 0; min-height: 100vh; display: flex; flex-direction: column;
-      align-items: center; justify-content: flex-start; gap: 14px;
-      font: 14px/1.5 ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: #0b0f17; color: #e6edf3; text-align: center; padding: 26px 22px; overflow: auto;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 0;
+      overflow: auto;
     }
-    .dot { width: 9px; height: 9px; border-radius: 999px; background: #3fb950; display: inline-block; box-shadow: 0 0 8px #3fb950; }
-    h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .2px; }
-    .row { display: flex; gap: 8px; align-items: center; justify-content: center; }
-    .sub { color: #8b949e; font-size: 12.5px; max-width: 440px; }
-    /* bright-yellow pairing box — mirrors the ① Pairing code box in the web console */
-    .pairbox { background: #2e2a08; border: 2px solid #facc15; border-radius: 12px; padding: 16px 18px; max-width: 460px; width: 100%; margin-top: 4px; }
-    .pairttl { color: #facc15; font-weight: 700; font-size: 13.5px; margin-bottom: 10px; }
+
+    /* Top bar — quiet status strip */
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: 1px solid #00e5ff44;
+      background: linear-gradient(145deg, #00e5ff22, #0a0a0a);
+      box-shadow: 0 0 16px #00e5ff22;
+      flex-shrink: 0;
+    }
+    .titles { min-width: 0; text-align: left; }
+    .titles h1 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      color: #fff;
+    }
+    .titles .sub {
+      margin: 1px 0 0;
+      font-size: 11.5px;
+      color: var(--mute2);
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-shrink: 0;
+      font-size: 11.5px;
+      color: var(--mute);
+      padding: 5px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 8px #22c55e88;
+    }
+
+    /* Main */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px;
+      max-width: 520px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--mute);
+      font-size: 12.5px;
+      text-align: left;
+      line-height: 1.55;
+    }
+    .lede strong { color: var(--text); font-weight: 600; }
+
+    /* Pairing card — brand surface (cyan accent, charcoal canvas) */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: left;
+    }
+    .card-h {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card-h .label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .card-h .hint {
+      font-size: 11px;
+      color: var(--mute2);
+    }
+
+    .code-wrap {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
     .code {
-      font: 700 17px ui-monospace, SFMono-Regular, monospace; letter-spacing: 1px;
-      background: #0b0f17; border: 1px solid #facc15; border-radius: 8px;
-      padding: 11px 12px; color: #fde047; user-select: all; word-break: break-all;
+      flex: 1;
+      min-width: 0;
+      font: 600 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.04em;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 12px;
+      color: var(--accent-light);
+      user-select: all;
+      word-break: break-all;
     }
-    .cbtn { font: 600 12px ui-sans-serif, sans-serif; cursor: pointer; background: #facc15; color: #1a1a1a; border: none; border-radius: 7px; padding: 7px 14px; margin-top: 9px; }
-    .cbtn:hover { filter: brightness(1.08); }
-    .steps { color: #c9d1d9; font-size: 12.5px; margin-top: 12px; line-height: 1.55; text-align: left; }
-    .steps b { color: #facc15; }
-    .ok { color: #3fb950; font-size: 13px; min-height: 18px; }
-    code { background: #161b22; border: 1px solid #30363d; border-radius: 5px; padding: 1px 6px; color: #79c0ff; }
-    .muted { color: #6e7681; font-size: 11.5px; max-width: 440px; }
+    .code.empty { color: var(--mute2); font-weight: 500; letter-spacing: 0.2em; }
+
+    button.copy {
+      flex-shrink: 0;
+      cursor: pointer;
+      font: 600 12px ui-sans-serif, system-ui, sans-serif;
+      color: var(--bg);
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      padding: 0 14px;
+      min-width: 72px;
+      transition: filter 0.12s ease;
+    }
+    button.copy:hover { filter: brightness(1.08); }
+    button.copy:active { filter: brightness(0.96); }
+    button.copy.done {
+      background: transparent;
+      color: var(--green);
+      border: 1px solid #22c55e55;
+    }
+
+    .steps {
+      margin: 14px 0 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .steps li {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      font-size: 12.5px;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .steps .n {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid #00e5ff44;
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+    }
+    .steps code {
+      font: 600 11.5px ui-monospace, SFMono-Regular, monospace;
+      color: var(--accent-light);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+    .steps em {
+      font-style: normal;
+      color: var(--mute);
+    }
+
+    .foot {
+      margin-top: auto;
+      padding-top: 4px;
+      font-size: 11.5px;
+      color: var(--mute2);
+      text-align: left;
+    }
+    .foot code {
+      font: 600 11px ui-monospace, monospace;
+      color: var(--mute);
+      background: var(--elevated);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    .msg {
+      min-height: 16px;
+      font-size: 12px;
+      color: var(--mute);
+    }
+    .msg.err { color: var(--red); }
+    .msg.ok { color: var(--green); }
   </style>
 </head>
 <body>
-  <div class="row"><span class="dot"></span><h1>RLMlocal Sandbox — running</h1></div>
-  <div class="sub">The local executor. Runs tests and applies <b>approved</b> changes on your machine. Nothing lands without your OK.</div>
-
-  <div class="pairbox">
-    <div class="pairttl">🔌 Your pairing code</div>
-    <div class="code" id="code">··········</div>
-    <button class="cbtn" id="copy">Copy code</button>
-    <div class="steps">
-      1. Open <code>rlmlocal.com</code> in your browser.<br />
-      2. Paste this code into the yellow <b>① Pairing code</b> box in the console.<br />
-      3. Set your <b>② Project folder</b> path in the box below it.<br />
-      4. Click <b>Connect →</b>.
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div class="titles">
+        <h1>RLMlocal Sandbox</h1>
+        <p class="sub">Local executor · hands for rlmlocal.com</p>
+      </div>
     </div>
-  </div>
-  <div class="ok" id="ok"></div>
+    <div class="status" title="HTTP bridge">
+      <span class="dot" aria-hidden="true"></span>
+      <span>Running</span>
+    </div>
+  </header>
 
-  <div class="muted">Bridge on <code>127.0.0.1:1421</code> · keep this window open while you work.</div>
+  <main>
+    <p class="lede">
+      Runs tests and applies <strong>approved</strong> changes on this machine.
+      Nothing lands without your OK in the browser.
+    </p>
+
+    <section class="card" aria-labelledby="pair-label">
+      <div class="card-h">
+        <span class="label" id="pair-label">Pairing code</span>
+        <span class="hint">paste into the site · once per launch</span>
+      </div>
+
+      <div class="code-wrap">
+        <div class="code empty" id="code" aria-live="polite">········</div>
+        <button type="button" class="copy" id="copy" disabled>Copy</button>
+      </div>
+
+      <ol class="steps">
+        <li>
+          <span class="n">1</span>
+          <span>Open <code>rlmlocal.com</code> in your browser.</span>
+        </li>
+        <li>
+          <span class="n">2</span>
+          <span>Paste this code into <em>① Pairing code</em> in the exec console.</span>
+        </li>
+        <li>
+          <span class="n">3</span>
+          <span>Set <em>② Project folder</em> path, then click <em>Connect →</em>.</span>
+        </li>
+        <li>
+          <span class="n">4</span>
+          <span>Keep this window open while you work.</span>
+        </li>
+      </ol>
+    </section>
+
+    <div class="msg" id="msg"></div>
+
+    <p class="foot">
+      Bridge <code>127.0.0.1:1421</code> · localhost only · pairing required on every request
+    </p>
+  </main>
 
   <script>
     const T = window.__TAURI__;
     let code = '';
+    const codeEl = document.getElementById('code');
+    const copyBtn = document.getElementById('copy');
+    const msg = document.getElementById('msg');
 
     async function load() {
       try {
         code = await T.core.invoke('get_pairing_code');
-        document.getElementById('code').textContent = code;
+        codeEl.textContent = code;
+        codeEl.classList.remove('empty');
+        copyBtn.disabled = false;
       } catch (e) {
-        document.getElementById('ok').textContent = 'Could not read pairing code: ' + (e && e.message ? e.message : e);
+        msg.className = 'msg err';
+        msg.textContent = 'Could not read pairing code: ' + (e && e.message ? e.message : e);
       }
     }
 
-    document.getElementById('copy').onclick = async () => {
-      try { await navigator.clipboard.writeText(code); } catch {}
-      const b = document.getElementById('copy'); b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy code'), 1200);
+    copyBtn.onclick = async () => {
+      if (!code) return;
+      try { await navigator.clipboard.writeText(code); } catch { /* ignore */ }
+      copyBtn.textContent = 'Copied';
+      copyBtn.classList.add('done');
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+        copyBtn.classList.remove('done');
+      }, 1400);
     };
 
     load();
