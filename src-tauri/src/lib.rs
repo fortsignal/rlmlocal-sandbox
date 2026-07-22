@@ -12,6 +12,9 @@ struct TestResult {
   runner: String,
   code: i32,
   failed: i64,
+  /// Test-execution evidence: Some(N) = N tests ran; None = NO evidence the suite ran at all
+  /// ("0 tests" must never read as "all tests passed" — the vacuous-GREEN class).
+  tests_ran: Option<i64>,
   output: String,
 }
 
@@ -26,6 +29,9 @@ struct VerifyResult {
   // broken refactor (e.g. calling an undefined function) shows here even when the tests don't cover that path.
   lint_new: i64,
   type_new: i64,
+  /// Test-execution evidence from the AFTER run (see parse_test_count). None = nothing ran — GREEN here
+  /// means "types/lint clean", NOT "tests pass".
+  tests_ran: Option<i64>,
   output: String,
 }
 
@@ -247,6 +253,30 @@ fn parse_failed(output: &str) -> Option<i64> {
   None
 }
 
+/// Test-execution EVIDENCE: does the output prove tests actually RAN? First `N passed` match covers
+/// vitest/jest ("Tests 1833 passed" / "Test Files 153 passed"), cargo ("22 passed"), pytest ("5 passed").
+/// None = no evidence — a missing test script or a runner that never executed. That is the FALSE-GREEN
+/// class (2026-07-22 dogfood: baseline and after both read "0", the delta looked clean, and a destructive
+/// rewrite passed "verify" on a suite that never ran).
+fn parse_test_count(output: &str) -> Option<i64> {
+  let clean = strip_ansi(output);
+  for (i, _) in clean.match_indices("passed") {
+    let digits: String = clean[..i]
+      .trim_end()
+      .chars()
+      .rev()
+      .take_while(|c| c.is_ascii_digit())
+      .collect::<String>()
+      .chars()
+      .rev()
+      .collect();
+    if let Ok(n) = digits.parse::<i64>() {
+      return Some(n);
+    }
+  }
+  None
+}
+
 /// std::process has no timeout — a watch-mode or deadlocked test script would freeze verify FOREVER
 /// (2026-07-19 audit). Spawn with stdout/stderr drained on threads (so a chatty suite can't deadlock
 /// on a full pipe), poll try_wait, kill past the deadline. A timeout is an ERROR — surfaces RED,
@@ -313,6 +343,7 @@ fn run_tests_inner(project_path: Option<String>) -> Result<TestResult, String> {
     runner,
     code,
     failed,
+    tests_ran: parse_test_count(&out),
     output: tail(&out, 2000),
   })
 }
@@ -334,6 +365,9 @@ pub(crate) fn now_ms() -> u128 {
 /// runs with the same env. The shadow checks out HEAD — the real working tree is read-only, untouched.
 pub(crate) fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
   let real = real_root.to_str().ok_or("non-utf8 project path")?;
+  // Self-heal stale worktree registrations FIRST (crashed/killed runs leave "prunable" entries behind —
+  // 35 accumulated in one dogfood week 2026-07). Cheap: only clears registrations whose dirs are gone.
+  let _ = Command::new("git").args(["-C", real, "worktree", "prune"]).output();
   let shadow = std::env::temp_dir().join(format!("rlm-shadow-{}-{}", std::process::id(), now_ms()));
   let shadow_s = shadow.to_str().ok_or("non-utf8 temp path")?;
 
@@ -423,12 +457,13 @@ pub(crate) fn make_shadow(real_root: &Path) -> Result<PathBuf, String> {
   Ok(shadow)
 }
 
-/// Always discard the shadow (git worktree remove + rm -rf belt-and-suspenders).
+/// Always discard the shadow (git worktree remove + rm -rf belt-and-suspenders, then prune the registration).
 pub(crate) fn remove_shadow(real_root: &Path, shadow: &Path) {
   if let (Some(real), Some(s)) = (real_root.to_str(), shadow.to_str()) {
     let _ = Command::new("git")
       .args(["-C", real, "worktree", "remove", "--force", s])
       .output();
+    let _ = Command::new("git").args(["-C", real, "worktree", "prune"]).output();
   }
   let _ = std::fs::remove_dir_all(shadow);
 }
@@ -685,6 +720,7 @@ fn verify_patch_inner(
       reverted: true, // real source was never touched — the shadow is discarded
       lint_new,
       type_new,
+      tests_ran: parse_test_count(&after_out),
       output: tail(&out, 2500),
     })
   })();
@@ -1292,5 +1328,75 @@ mod verify_honesty_tests {
     assert!(parse_check_cmd("py").is_some());
     assert!(parse_check_cmd("go").is_none());
     assert!(parse_check_cmd("rs").is_none());
+  }
+}
+
+#[cfg(test)]
+mod suite_evidence_tests {
+  use super::*;
+
+  fn mkrepo(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("rlm-suite-evidence-{name}-{}-{}", std::process::id(), now_ms()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("root dir");
+    for args in [vec!["init", "-q"], vec!["config", "user.email", "t@t"], vec!["config", "user.name", "t"]] {
+      let o = Command::new("git").args(["-C", root.to_str().unwrap()]).args(&args).output().expect("git");
+      assert!(o.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    root
+  }
+
+  fn commit_all(root: &std::path::Path) {
+    for args in [vec!["add", "-A"], vec!["commit", "-q", "-m", "init"]] {
+      let o = Command::new("git").args(["-C", root.to_str().unwrap()]).args(&args).output().expect("git");
+      assert!(o.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&o.stderr));
+    }
+  }
+
+  #[test]
+  fn parse_test_count_reads_runner_output() {
+    assert_eq!(parse_test_count("Test Files  153 passed (158)\n      Tests  1833 passed | 6 skipped"), Some(153));
+    assert_eq!(parse_test_count("test result: ok. 22 passed; 0 failed; 0 ignored"), Some(22));
+    assert_eq!(parse_test_count("======= 5 passed in 1.23s ======="), Some(5));
+    assert_eq!(parse_test_count("npm ERR! Missing script: \"test\""), None);
+    assert_eq!(parse_test_count(""), None);
+  }
+
+  #[test]
+  fn verify_flags_a_suite_that_never_ran_instead_of_calling_it_green() {
+    let root = mkrepo("nosuite");
+    std::fs::write(root.join("package.json"), "{\"name\":\"nosuite\"}\n").unwrap(); // NO test script
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.ts"), "const x = 'old';\n").unwrap();
+    commit_all(&root);
+    let r = verify_patch_inner(
+      Some(root.to_string_lossy().into_owned()),
+      "src/a.ts".into(),
+      vec![Edit { file: None, search: "'old'".into(), replace: "'new'".into() }],
+    ).expect("verify runs");
+    // npm test can't run (no script) — baseline and after fail IDENTICALLY, so the delta verdict says
+    // "not broke" (a no-tests project must not go RED) — but the evidence flag must say NOTHING RAN.
+    assert_eq!(r.tests_ran, None, "a suite that never ran must not look like passing tests");
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[test]
+  fn make_shadow_prunes_dead_worktree_registrations() {
+    let root = mkrepo("prune");
+    std::fs::write(root.join("README.md"), "x\n").unwrap();
+    commit_all(&root);
+    // The prunable case: worktree added, then the dir deleted WITHOUT `worktree remove`.
+    let dead = std::env::temp_dir().join(format!("rlm-shadow-dead-{}-{}", std::process::id(), now_ms()));
+    let add = Command::new("git")
+      .args(["-C", root.to_str().unwrap(), "worktree", "add", "--detach", dead.to_str().unwrap(), "HEAD"])
+      .output().expect("worktree add");
+    assert!(add.status.success(), "worktree add failed: {}", String::from_utf8_lossy(&add.stderr));
+    let _ = std::fs::remove_dir_all(&dead); // dir gone, registration stays → "prunable"
+    let shadow = make_shadow(&root).expect("make_shadow");
+    let list = Command::new("git").args(["-C", root.to_str().unwrap(), "worktree", "list"]).output().expect("worktree list");
+    let listing = String::from_utf8_lossy(&list.stdout);
+    assert!(!listing.contains("rlm-shadow-dead"), "dead registration should be pruned at make_shadow:\n{listing}");
+    remove_shadow(&root, &shadow);
+    let _ = std::fs::remove_dir_all(root);
   }
 }

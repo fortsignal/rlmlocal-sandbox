@@ -2,12 +2,10 @@
      prepends this file's contents to the GitHub release body, above the download/setup section.
      Keep it user-facing (what changed, in plain terms) — no internal symbol names. -->
 
-## ✨ What's new in v0.1.5
+## ✨ What's new in v0.1.6
 
-- **Graph coder hands** — local OpenCode task host so the CODE dock can run multi-step coding in a shadow worktree (still requires your Approve before anything lands).
-- **Co-change signals** — the executor can report which files historically change together (for planning / graph), now covering modern JS variants and more languages.
-- **Literal source scan** — exact on-disk search helper for implementation planning (read-only).
-- **Python verify, fixed** — refactors on Python projects now verify against YOUR project's own environment (your venv is used instead of a stray global pytest), and a stuck or watch-mode test run can no longer freeze verification — it now fails honestly instead of hanging or, worse, passing without running.
+- **Honest "0 tests" verdicts** — verification now reports when a test suite never actually ran (no test evidence) instead of showing a clean GREEN. On those projects the app says "0 tests detected (types/lint only)" — a suite that can't start can no longer make a bad change look verified.
+- **Shadow cleanup** — verification worktrees now clean up their own stale registrations (crashed or interrupted runs used to accumulate them).
 - Existing structure path (verify → Approve → land) unchanged.
 
 *Existing installs auto-update on next launch when this release is published. Still an unsigned beta.*
